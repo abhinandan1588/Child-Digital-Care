@@ -1,0 +1,29 @@
+Hostname :- dpg-dboofv3bc2fs73coierg-a
+
+Port
+5432
+
+Database
+child_digital_care
+
+Username
+child_digital_care_user
+
+Password
+YandflqjbEeIBMi28fx554uid3ccdvcL
+
+
+Internal Database URL
+postgresql://child_digital_care_user:YandflqjbEeIBMi28fx554uid3ccdvcL@dpg-dboofv3bc2fs73coierg-a/child_digital_care
+
+
+External Database URL
+postgresql://child_digital_care_user:YandflqjbEeIBMi28fx554uid3ccdvcL@dpg-dboofv3bc2fs73coierg-a.singapore-postgres.render.com/child_digital_care
+
+
+PSQL Command
+PGPASSWORD=YandflqjbEeIBMi28fx554uid3ccdvcL psql -h dpg-dboofv3bc2fs73coierg-a.singapore-postgres.render.com -U child_digital_care_user child_digital_care
+
+
+Credential Rotation
+Create new default credentials and delete the old ones when ready.
