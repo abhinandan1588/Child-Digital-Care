@@ -60,8 +60,8 @@ class Settings(BaseSettings):
     # --- Crypto / tokens --------------------------------------------------
     secret_key: str = PLACEHOLDER_SECRET
     jwt_algorithm: Literal["HS256", "RS256"] = "HS256"
-    jwt_private_key_path: str | None = /etc/secrets/jwt_private.pem
-    jwt_public_key_path: str | None = /etc/secrets/jwt_public.pem
+    jwt_private_key_path: str | None = /secrets/jwt_private.pem
+    jwt_public_key_path: str | None = /secrets/jwt_public.pem
     jwt_issuer: str = "child-digital-care"
     jwt_key_id: str = "local-dev-1"
 
