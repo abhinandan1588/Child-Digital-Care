@@ -23,3 +23,5 @@ secrets/
 firebase-service-account*.json
 service-account*.json
 child_digital_care_backend_master_prompt.md
+*.zip
+deploy-secrets/

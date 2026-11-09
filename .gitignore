@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# Repository-root ignores.
+#
+# Backend/.gitignore covers the application tree. This file covers the
+# repository root, which previously had no .gitignore at all - that is how
+# deploy-secrets/ and the pasted Postgres credentials reached a public remote.
+# ---------------------------------------------------------------------------
+
+# Key material. Never commit a private key; deployed environments read it from
+# their own secret store (see docs/RENDER_DEPLOYMENT.md).
+deploy-secrets/
+secrets/
+*.pem
+*.key
+*.p12
+*.jks
+firebase-service-account*.json
+service-account*.json
+
+# Credentials pasted out of a provider dashboard for convenience.
+*credentials*.txt
+*secret*.txt
+*password*.txt
+postgres*details*.txt
+postgress*details*.txt
+
+# Environments
+.env
+.env.*
+!.env.example
+
+# Build artefacts that do not belong in version control
+*.zip
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

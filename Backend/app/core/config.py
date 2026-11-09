@@ -12,6 +12,7 @@ import functools
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import parse_qsl, urlencode
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -41,6 +42,81 @@ def _split_csv(value: object) -> object:
     return value
 
 
+def normalize_database_url(url: str) -> str:
+    """Make a provider-supplied PostgreSQL URL usable by SQLAlchemy + asyncpg.
+
+    Managed database providers (Render, Heroku, Neon, Railway, Supabase) hand
+    out libpq connection strings: a ``postgres://`` or ``postgresql://`` scheme,
+    often with ``sslmode`` in the query string. Neither part works here as
+    given:
+
+    * Without a driver in the scheme, SQLAlchemy loads its default synchronous
+      psycopg driver, which this project does not install, so the engine fails
+      with ``ModuleNotFoundError: No module named 'psycopg2'``.
+    * SQLAlchemy's asyncpg dialect forwards every query parameter straight into
+      ``asyncpg.connect()``, and asyncpg has no ``sslmode`` argument - it spells
+      that setting ``ssl`` and accepts the same values. Left alone the
+      connection raises
+      ``TypeError: connect() got an unexpected keyword argument 'sslmode'``.
+
+    Rewriting both here means a connection string copied out of a provider's
+    dashboard can be pasted into ``DATABASE_URL`` unedited. Only these two
+    known-incompatible forms are touched; any other query parameter is passed
+    through untouched rather than guessed at.
+    """
+    if not url:
+        return url
+
+    scheme, separator, remainder = url.partition("://")
+    if not separator or not scheme.startswith(("postgres", "postgresql")):
+        return url  # sqlite (tests) or an explicitly chosen non-postgres driver
+
+    if scheme in ("postgres", "postgresql"):
+        scheme = "postgresql+asyncpg"
+    if not scheme.endswith("+asyncpg"):
+        # Somebody deliberately selected a different driver; respect it.
+        return f"{scheme}://{remainder}"
+
+    address, question_mark, query = remainder.partition("?")
+    if not question_mark:
+        return f"{scheme}://{address}"
+
+    pairs = parse_qsl(query, keep_blank_values=True)
+    already_has_ssl = any(key == "ssl" for key, _ in pairs)
+    translated: list[tuple[str, str]] = []
+    for key, value in pairs:
+        if key == "sslmode":
+            if not already_has_ssl:
+                translated.append(("ssl", value))
+            continue
+        if key == "channel_binding":
+            continue  # libpq-only; asyncpg negotiates this itself
+        translated.append((key, value))
+
+    # ``safe="/"`` keeps Unix socket paths (``?host=/var/run/postgresql``)
+    # readable, and keeps percent signs out of the URL - Alembic stores it in a
+    # ConfigParser, where '%' is interpolation syntax.
+    rebuilt = urlencode(translated, safe="/")
+    return f"{scheme}://{address}?{rebuilt}" if rebuilt else f"{scheme}://{address}"
+
+
+def _normalize_pem(value: str | None) -> str | None:
+    """Accept PEM text pasted into a dashboard field as a single line.
+
+    Web consoles and ``.env`` files frequently turn the newlines in a PEM block
+    into the two characters ``\\n``. PyJWT then rejects the key as malformed,
+    which reads like a wrong-key error rather than a formatting one.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if "\\n" in text and "\n" not in text:
+        text = text.replace("\\n", "\n")
+    return text
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -60,8 +136,13 @@ class Settings(BaseSettings):
     # --- Crypto / tokens --------------------------------------------------
     secret_key: str = PLACEHOLDER_SECRET
     jwt_algorithm: Literal["HS256", "RS256"] = "HS256"
-    jwt_private_key_path: str | None = /secrets/jwt_private.pem
-    jwt_public_key_path: str | None = /secrets/jwt_public.pem
+    # RS256 keys can arrive either as a file path (Kubernetes/Docker secret
+    # mounts) or as inline PEM text (platforms whose only secret store is an
+    # environment variable, such as Render). Inline wins when both are set.
+    jwt_private_key: str | None = None
+    jwt_public_key: str | None = None
+    jwt_private_key_path: str | None = None
+    jwt_public_key_path: str | None = None
     jwt_issuer: str = "child-digital-care"
     jwt_key_id: str = "local-dev-1"
 
@@ -79,14 +160,17 @@ class Settings(BaseSettings):
     pairing_max_claim_attempts: int = 5
 
     # --- Datastores -------------------------------------------------------
-    database_url: str = "postgresql://child_digital_care_user:YandflqjbEeIBMi28fx554uid3ccdvcL@dpg-dboofv3bc2fs73coierg-a/child_digital_care+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
+    # Defaults describe a local development stack only. Every deployed
+    # environment supplies DATABASE_URL and REDIS_URL from its own secret
+    # store; no connection string belongs in this file.
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
     database_pool_size: int = 10
     database_max_overflow: int = 5
     database_pool_timeout_seconds: int = 30
     database_pool_recycle_seconds: int = 1800
     database_echo: bool = False
 
-    redis_url: str | None = "redis://red-dbooi03m8hqs73eiluf0:6379"
+    redis_url: str | None = None
 
     # --- HTTP surface -----------------------------------------------------
     cors_origins: CsvList
@@ -160,6 +244,16 @@ class Settings(BaseSettings):
     def _coerce_csv(cls, value: object) -> object:
         return _split_csv(value)
 
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _normalize_database_url(cls, value: str) -> str:
+        return normalize_database_url(value)
+
+    @field_validator("jwt_private_key", "jwt_public_key", mode="after")
+    @classmethod
+    def _normalize_jwt_pem(cls, value: str | None) -> str | None:
+        return _normalize_pem(value)
+
     @field_validator("log_level")
     @classmethod
     def _upper_log_level(cls, value: str) -> str:
@@ -203,16 +297,24 @@ class Settings(BaseSettings):
     def jwt_signing_key(self) -> str:
         if self.jwt_algorithm == "HS256":
             return self.secret_key
-        if not self.jwt_private_key_path:
-            raise RuntimeError("JWT_PRIVATE_KEY_PATH is required when JWT_ALGORITHM=RS256")
-        return Path(self.jwt_private_key_path).read_text(encoding="utf-8")
+        if self.jwt_private_key:
+            return self.jwt_private_key
+        if self.jwt_private_key_path:
+            return Path(self.jwt_private_key_path).read_text(encoding="utf-8")
+        raise RuntimeError(
+            "JWT_PRIVATE_KEY or JWT_PRIVATE_KEY_PATH is required when JWT_ALGORITHM=RS256"
+        )
 
     def jwt_verification_key(self) -> str:
         if self.jwt_algorithm == "HS256":
             return self.secret_key
-        if not self.jwt_public_key_path:
-            raise RuntimeError("JWT_PUBLIC_KEY_PATH is required when JWT_ALGORITHM=RS256")
-        return Path(self.jwt_public_key_path).read_text(encoding="utf-8")
+        if self.jwt_public_key:
+            return self.jwt_public_key
+        if self.jwt_public_key_path:
+            return Path(self.jwt_public_key_path).read_text(encoding="utf-8")
+        raise RuntimeError(
+            "JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH is required when JWT_ALGORITHM=RS256"
+        )
 
     # ------------------------------------------------------------------
     # Fail-fast production validation
@@ -222,14 +324,30 @@ class Settings(BaseSettings):
         problems: list[str] = []
 
         if self.jwt_algorithm == "RS256":
-            for label, path in (
-                ("JWT_PRIVATE_KEY_PATH", self.jwt_private_key_path),
-                ("JWT_PUBLIC_KEY_PATH", self.jwt_public_key_path),
+            # Either form satisfies the requirement: inline PEM text, or a path
+            # to a readable file. Only the path form can be checked eagerly.
+            for inline_label, inline, path_label, path in (
+                (
+                    "JWT_PRIVATE_KEY",
+                    self.jwt_private_key,
+                    "JWT_PRIVATE_KEY_PATH",
+                    self.jwt_private_key_path,
+                ),
+                (
+                    "JWT_PUBLIC_KEY",
+                    self.jwt_public_key,
+                    "JWT_PUBLIC_KEY_PATH",
+                    self.jwt_public_key_path,
+                ),
             ):
+                if inline:
+                    continue
                 if not path:
-                    problems.append(f"{label} must be set when JWT_ALGORITHM=RS256.")
+                    problems.append(
+                        f"{inline_label} or {path_label} must be set when JWT_ALGORITHM=RS256."
+                    )
                 elif not Path(path).is_file():
-                    problems.append(f"{label} points at a missing file: {path}")
+                    problems.append(f"{path_label} points at a missing file: {path}")
 
         if self.app_env in (AppEnv.production, AppEnv.staging):
             if self.secret_key == PLACEHOLDER_SECRET:
@@ -283,4 +401,10 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
-__all__ = ["AppEnv", "Settings", "get_settings", "settings"]
+__all__ = [
+    "AppEnv",
+    "Settings",
+    "get_settings",
+    "normalize_database_url",
+    "settings",
+]

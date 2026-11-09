@@ -55,4 +55,9 @@ EXPOSE 8000
 
 # No secrets, no .env and no service-account JSON are baked in; configuration
 # arrives as environment variables and mounted secrets at run time.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+#
+# The port is read from $PORT so the same image runs on platforms that assign
+# one (Render, Cloud Run, Heroku) and falls back to 8000 for compose and local
+# runs. --proxy-headers is required behind those platforms' TLS terminators,
+# otherwise every request looks like plain HTTP from the proxy's own address.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'"]

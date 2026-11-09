@@ -1,0 +1,218 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint - Child Digital Care backend
+#
+# Full walkthrough, including the dashboard-only route and how to promote this
+# to a hardened production configuration:
+#     Backend/docs/RENDER_DEPLOYMENT.md
+#
+# Layout note: this repository keeps the backend in Backend/. Render resolves
+# dockerfilePath and dockerContext against the REPOSITORY root (not rootDir),
+# which is why both paths below start with ./Backend.
+#
+# Resource names (keep every wiring reference in sync with this list):
+#   web: child-digital-care-api
+#   key value: child-digital-care-cache
+#
+# DATABASE_URL and REDIS_URL are declared `sync: false`, so Render prompts for
+# them on the first sync instead of provisioning new datastores. That suits the
+# common case of a Postgres instance and a Key Value instance that already
+# exist. To have the Blueprint create and wire them itself, use the commented
+# block at the bottom of this file.
+# ---------------------------------------------------------------------------
+
+services:
+  - type: web
+    name: child-digital-care-api
+    runtime: docker
+    # Must match the region of the Postgres and Key Value instances, otherwise
+    # their internal hostnames do not resolve.
+    region: singapore
+    plan: free
+    dockerfilePath: ./Backend/Dockerfile
+    dockerContext: ./Backend
+    # Only rebuild when the backend actually changes.
+    buildFilter:
+      paths:
+        - Backend/**
+    # /health/live touches no dependency, so a brief database blip does not
+    # cause Render to replace a healthy instance. Readiness is at
+    # /health/ready, which reports database and Redis state.
+    healthCheckPath: /health/live
+    # Alembic runs here rather than in preDeployCommand because pre-deploy
+    # commands require a paid instance type. On a paid plan, move
+    # `alembic upgrade head` into preDeployCommand and drop it from this line:
+    # that stops schema changes from racing when more than one instance starts.
+    dockerCommand: >-
+      sh -c "alembic upgrade head &&
+      exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      --proxy-headers --forwarded-allow-ips '*'"
+    envVars:
+      # --- Datastores: entered at first sync -----------------------------
+      # Paste the INTERNAL connection strings. The application rewrites a
+      # libpq-style `postgres://`/`postgresql://` URL (and `sslmode`) into the
+      # asyncpg form it needs, so the value can be pasted unedited.
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+
+      # --- Application ----------------------------------------------------
+      # `staging` is deliberate for a first deploy: it enforces a real
+      # SECRET_KEY, a non-wildcard CORS list and a configured Redis, while not
+      # yet demanding RS256 keys and SMTP. See the promotion checklist in
+      # Backend/docs/RENDER_DEPLOYMENT.md before serving real families.
+      - key: APP_ENV
+        value: staging
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_FORMAT
+        value: json
+
+      # Render mints a 256-bit base64 secret once, on first sync, and keeps it
+      # across later syncs - regenerating it would invalidate every token in
+      # flight. Used to sign JWTs while JWT_ALGORITHM is HS256.
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+
+      # --- HTTP surface ---------------------------------------------------
+      # Startup validation requires at least one non-wildcard origin outside
+      # development. Replace this with the real Admin Dashboard origin; the
+      # Android clients are not browsers and need no CORS entry.
+      - key: CORS_ORIGINS
+        value: https://child-digital-care-api.onrender.com
+      - key: FRONTEND_BASE_URL
+        value: https://child-digital-care-api.onrender.com
+      # TRUSTED_HOSTS is intentionally unset. Leaving it empty skips the host
+      # allow-list middleware entirely, so Render's health check cannot be
+      # rejected with "Invalid host header" on the first deploy. Production
+      # requires a real list - see the promotion checklist.
+      - key: ENABLE_DOCS
+        value: "true"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_FAIL_OPEN
+        value: "true"
+
+      # --- Email ----------------------------------------------------------
+      # `console` writes the message to the service log instead of sending it,
+      # which is how you retrieve a verification link before SMTP exists. It is
+      # rejected outright when APP_ENV=production.
+      - key: EMAIL_PROVIDER
+        value: console
+      - key: EMAIL_FROM
+        value: noreply@example.test
+      # Set to "true" as soon as SMTP is configured. While this is false,
+      # anyone can register with an address they do not control.
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "false"
+
+      # --- Optional integrations, all off until credentials exist ----------
+      - key: PUSH_PROVIDER
+        value: disabled
+      - key: PAYMENT_PROVIDER
+        value: disabled
+      - key: OBJECT_STORAGE_PROVIDER
+        value: disabled
+
+      # --- Feature gates ---------------------------------------------------
+      # Location stays off until disclosure, consent and Play-policy review are
+      # done for this deployment. See Backend/docs/PRIVACY_AND_RETENTION.md.
+      - key: FEATURE_LOCATION_ENABLED
+        value: "false"
+      - key: FEATURE_WEBSOCKETS_ENABLED
+        value: "true"
+
+      # --- Connection budget ----------------------------------------------
+      # Render Postgres caps simultaneous connections (free and small paid
+      # instances allow far fewer than a default pool implies). pool_size +
+      # max_overflow is the per-instance ceiling, so keep this product well
+      # under the cap once the worker and any extra web instances are counted.
+      - key: DATABASE_POOL_SIZE
+        value: "5"
+      - key: DATABASE_MAX_OVERFLOW
+        value: "2"
+
+# ---------------------------------------------------------------------------
+# Background worker - Celery beat + worker.
+#
+# Commented out because background workers require a paid instance type. The
+# API is fully usable without it: child devices receive commands by polling
+# /device/sync and over the WebSocket stream. What does NOT happen without a
+# worker is everything on the beat schedule - outbox publishing (so no FCM
+# wake-ups), command and invitation expiry, stale-device marking, retention
+# sweeps, and due account deletions.
+#
+# Uncomment after upgrading the plan, and give it the same DATABASE_URL and
+# REDIS_URL values.
+# ---------------------------------------------------------------------------
+#  - type: worker
+#    name: child-digital-care-worker
+#    runtime: docker
+#    region: singapore
+#    plan: starter
+#    dockerfilePath: ./Backend/Dockerfile
+#    dockerContext: ./Backend
+#    buildFilter:
+#      paths:
+#        - Backend/**
+#    dockerCommand: >-
+#      sh -c "exec celery -A app.workers.celery_app:celery_app worker
+#      --beat --loglevel=info --concurrency=2"
+#    envVars:
+#      - key: DATABASE_URL
+#        sync: false
+#      - key: REDIS_URL
+#        sync: false
+#      - key: APP_ENV
+#        value: staging
+#      - key: SECRET_KEY
+#        fromService:
+#          name: child-digital-care-api
+#          type: web
+#          envVarKey: SECRET_KEY
+#      - key: EMAIL_PROVIDER
+#        value: console
+#      - key: CORS_ORIGINS
+#        value: https://child-digital-care-api.onrender.com
+
+# ---------------------------------------------------------------------------
+# Provisioning the datastores from this Blueprint instead.
+#
+# Replace the two `sync: false` entries above with the wiring below, and add
+# this `databases:` block. Note that a Render workspace is limited to one free
+# Postgres instance, and a free instance is removed automatically after its
+# trial period - so a Blueprint-provisioned free database will clash with one
+# you already created by hand.
+#
+#      - key: DATABASE_URL
+#        fromDatabase:
+#          name: child-digital-care-db
+#          property: connectionString
+#      - key: REDIS_URL
+#        fromService:
+#          name: child-digital-care-cache
+#          type: keyvalue
+#          property: connectionString
+#
+#  - type: keyvalue
+#    name: child-digital-care-cache
+#    region: singapore
+#    plan: free
+#    # Empty list = no public internet access; reachable only from services in
+#    # this same region. That is what the application needs.
+#    ipAllowList: []
+#    # Rate-limit counters and pub/sub traffic are both disposable, but
+#    # `noeviction` keeps the limiter from silently losing counters.
+#    maxmemoryPolicy: noeviction
+#
+# databases:
+#  - name: child-digital-care-db
+#    databaseName: child_digital_care
+#    user: child_digital_care_user
+#    region: singapore
+#    plan: free
+#    ipAllowList: []

@@ -26,7 +26,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Alembic keeps options in a ConfigParser, where '%' starts an interpolation
+# token. A generated database password containing '%' would otherwise fail the
+# migration with an InterpolationSyntaxError, so escape it for storage.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 
 def include_object(obj, name, type_, reflected, compare_to) -> bool:  # noqa: ANN001
