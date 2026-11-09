@@ -1,0 +1,131 @@
+[project]
+name = "child-digital-care-backend"
+version = "0.1.0"
+description = "Backend API for Child Digital Care (parent app, child app, admin dashboard)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+
+# Pinned to the versions this project was built and tested against.
+dependencies = [
+    "fastapi==0.162.1",
+    "uvicorn[standard]==0.54.0",
+    "pydantic==2.14.3",
+    "pydantic-settings==2.16.2",
+    "email-validator==2.3.0",
+    "SQLAlchemy[asyncio]==2.1.8",
+    "alembic==1.20.1",
+    "asyncpg==0.32.0",
+    "redis==8.1.0",
+    "celery==5.7.0",
+    "PyJWT==2.15.1",
+    "pwdlib[argon2]==0.3.1",
+    "httpx==0.28.1",
+    "structlog==26.1.0",
+    "orjson==3.11.4",
+]
+
+[project.optional-dependencies]
+# Push notifications. Kept optional so the API can boot without gRPC wheels.
+fcm = ["firebase-admin==7.7.0"]
+# Local development / CI test stack.
+dev = [
+    "pytest==9.2.0",
+    "pytest-asyncio==1.4.1.post1",
+    "pytest-cov==7.1.0",
+    "aiosqlite==0.22.1",
+    "ruff==0.17.4",
+    "mypy==2.4.1",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+# `docs` is excluded because ruff reformats Python snippets inside Markdown,
+# and the snippets there are illustrative prose, not compiled code.
+exclude = [".venv", "migrations/versions", "build", "dist", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # comprehensions
+    "UP",  # pyupgrade
+    "ASYNC",
+    "S",   # bandit
+    "T20", # no print
+    "RET",
+    "SIM",
+    "TID",
+]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is the documented pattern
+    "S101",   # assert is used in tests and in exception-handler type narrowing
+    "RET504",
+    # S105 flags any constant whose *name* contains "token"/"password". This
+    # codebase names enum members and error codes that way (TOKEN_EXPIRED,
+    # token_type, token_invalid) and holds no hardcoded credentials. S106/S107
+    # (hardcoded arguments and defaults) stay enabled.
+    "S105",
+    # PEP 695 type parameters. Kept as explicit Generic[T] because the response
+    # envelope is a pydantic generic model consumed by OpenAPI generation.
+    "UP046",
+    "UP047",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "T20"]
+# Operator-facing CLIs: stdout is their interface, not a log sink.
+"app/scripts/**" = ["T20"]
+"app/workers/run_job.py" = ["T20"]
+"app/integrations/email/provider.py" = ["T20"]
+"migrations/**" = ["I", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+files = ["app"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+exclude = "(^|/)(migrations)/"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q --strict-markers"
+markers = [
+    "unit: isolated logic tests",
+    "integration: tests that exercise the API against a database",
+    "security: authorization-boundary and abuse tests",
+    "contract: API shape / OpenAPI tests",
+]
+filterwarnings = ["error::DeprecationWarning:app.*"]

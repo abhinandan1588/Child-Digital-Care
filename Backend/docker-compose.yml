@@ -1,0 +1,154 @@
+# Local development stack.
+#
+# Database and Redis ports are published to localhost only (127.0.0.1) so the
+# containers are reachable from the host without being exposed on the network.
+# A production deployment must not publish them at all.
+
+name: child-digital-care
+
+x-app-env: &app-env
+  APP_ENV: development
+  DEBUG: "true"
+  SECRET_KEY: local-development-secret-change-me-0123456789
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/child_digital_care
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: http://localhost:3000,http://localhost:8080
+  FRONTEND_BASE_URL: http://localhost:3000
+  EMAIL_PROVIDER: smtp
+  EMAIL_FROM: noreply@example.test
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_USE_TLS: "false"
+  PUSH_PROVIDER: disabled
+  PAYMENT_PROVIDER: disabled
+  OBJECT_STORAGE_PROVIDER: disabled
+  FEATURE_LOCATION_ENABLED: "false"
+  FEATURE_WEBSITE_RESTRICTIONS_ENABLED: "false"
+  LOG_FORMAT: console
+  LOG_LEVEL: INFO
+
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    environment:
+      <<: *app-env
+      # The image defaults to production; override for the dev stack.
+      APP_ENV: development
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    volumes:
+      # Live reload during development. Remove for a production-like run.
+      - ./app:/srv/app/app:ro
+      - ./migrations:/srv/app/migrations:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    environment:
+      <<: *app-env
+    command: celery -A app.worker beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - ./app:/srv/app/app:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.workers.tasks", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      target: runtime
+    environment:
+      <<: *app-env
+    command:
+      - celery
+      - -A
+      - app.workers.tasks
+      - beat
+      - --loglevel=info
+    volumes:
+      - ./app:/srv/app/app:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: child_digital_care
+      # Fail fast on a bad client encoding rather than storing mojibake.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d child_digital_care"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Development mail sink. Captures verification and reset emails so a
+  # developer can complete those flows without sending real mail.
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "127.0.0.1:8025:8025"  # web UI
+      - "127.0.0.1:1025:1025"  # SMTP
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

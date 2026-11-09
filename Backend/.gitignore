@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Secrets - never commit these
+secrets/
+*.pem
+*.key
+firebase-service-account*.json
+service-account*.json
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local databases / scratch
+*.sqlite3
+*.db
+tmp/
+.autogen.sqlite3
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
