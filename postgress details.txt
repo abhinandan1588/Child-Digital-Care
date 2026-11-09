@@ -27,3 +27,9 @@ PGPASSWORD=YandflqjbEeIBMi28fx554uid3ccdvcL psql -h dpg-dboofv3bc2fs73coierg-a.s
 
 Credential Rotation
 Create new default credentials and delete the old ones when ready.
+
+Internal Key Value URL
+redis://red-dbooi03m8hqs73eiluf0:6379
+
+
+

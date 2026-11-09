@@ -60,8 +60,8 @@ class Settings(BaseSettings):
     # --- Crypto / tokens --------------------------------------------------
     secret_key: str = PLACEHOLDER_SECRET
     jwt_algorithm: Literal["HS256", "RS256"] = "HS256"
-    jwt_private_key_path: str | None = None
-    jwt_public_key_path: str | None = None
+    jwt_private_key_path:/etc/secrets/jwt_private.pem
+    jwt_public_key_path:/etc/secrets/jwt_public.pem
     jwt_issuer: str = "child-digital-care"
     jwt_key_id: str = "local-dev-1"
 
@@ -79,14 +79,14 @@ class Settings(BaseSettings):
     pairing_max_claim_attempts: int = 5
 
     # --- Datastores -------------------------------------------------------
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
+    database_url: str = "postgresql://child_digital_care_user:YandflqjbEeIBMi28fx554uid3ccdvcL@dpg-dboofv3bc2fs73coierg-a/child_digital_care+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
     database_pool_size: int = 10
     database_max_overflow: int = 5
     database_pool_timeout_seconds: int = 30
     database_pool_recycle_seconds: int = 1800
     database_echo: bool = False
 
-    redis_url: str | None = "redis://localhost:6379/0"
+    redis_url: str | None = "redis://red-dbooi03m8hqs73eiluf0:6379"
 
     # --- HTTP surface -----------------------------------------------------
     cors_origins: CsvList
