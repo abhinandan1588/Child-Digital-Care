@@ -19,6 +19,16 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER_SECRET = "replace-this-for-local-development"  # noqa: S105 - sentinel, not a secret
 
+# The local-development fallback. Deployed environments must set DATABASE_URL
+# explicitly; validation below rejects this exact value so that an unset
+# variable fails at startup with a clear message, rather than starting and then
+# failing every request against a database that is not there.
+LOCAL_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
+
+# Shown alongside configuration errors, because the failure is almost always a
+# missing environment variable on the hosting platform rather than a code bug.
+CONFIG_HELP_URL = "docs/RENDER_DEPLOYMENT.md"
+
 
 class AppEnv(StrEnum):
     development = "development"
@@ -163,7 +173,7 @@ class Settings(BaseSettings):
     # Defaults describe a local development stack only. Every deployed
     # environment supplies DATABASE_URL and REDIS_URL from its own secret
     # store; no connection string belongs in this file.
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/child_digital_care"
+    database_url: str = LOCAL_DATABASE_URL
     database_pool_size: int = 10
     database_max_overflow: int = 5
     database_pool_timeout_seconds: int = 30
@@ -362,6 +372,11 @@ class Settings(BaseSettings):
                 problems.append("REDIS_URL is required (rate limiting and outbox depend on it).")
             if self.database_url.startswith("sqlite"):
                 problems.append("SQLite is not supported outside local development/tests.")
+            if self.database_url == LOCAL_DATABASE_URL:
+                problems.append(
+                    "DATABASE_URL is not set; it still holds the local development default. "
+                    "Use the managed database's internal connection string."
+                )
 
         if self.app_env is AppEnv.production:
             if self.debug:
@@ -388,7 +403,9 @@ class Settings(BaseSettings):
         if problems:
             bullet_list = "\n  - ".join(problems)
             raise ValueError(
-                f"Invalid configuration for APP_ENV={self.app_env.value}:\n  - {bullet_list}"
+                f"Invalid configuration for APP_ENV={self.app_env.value}:\n  - {bullet_list}\n"
+                f"Each item above is an environment variable this environment must supply. "
+                f"See {CONFIG_HELP_URL}."
             )
         return self
 

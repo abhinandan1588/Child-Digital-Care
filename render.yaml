@@ -38,14 +38,14 @@ services:
     # cause Render to replace a healthy instance. Readiness is at
     # /health/ready, which reports database and Redis state.
     healthCheckPath: /health/live
-    # Alembic runs here rather than in preDeployCommand because pre-deploy
-    # commands require a paid instance type. On a paid plan, move
-    # `alembic upgrade head` into preDeployCommand and drop it from this line:
-    # that stops schema changes from racing when more than one instance starts.
+    # Migrations are applied by the image's entrypoint, so this is just the
+    # server. Pre-deploy commands require a paid instance type; on a paid plan,
+    # set preDeployCommand: alembic upgrade head and
+    # RUN_MIGRATIONS_ON_START=false, which stops schema changes from racing
+    # when more than one instance starts.
     dockerCommand: >-
-      sh -c "alembic upgrade head &&
-      exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
-      --proxy-headers --forwarded-allow-ips '*'"
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      --proxy-headers --forwarded-allow-ips '*'
     envVars:
       # --- Datastores: entered at first sync -----------------------------
       # Paste the INTERNAL connection strings. The application rewrites a

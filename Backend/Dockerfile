@@ -48,10 +48,15 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --chown=cdc:cdc app ./app
 COPY --chown=cdc:cdc migrations ./migrations
 COPY --chown=cdc:cdc alembic.ini pyproject.toml ./
+COPY --chown=cdc:cdc --chmod=0755 docker-entrypoint.sh ./docker-entrypoint.sh
 
 USER cdc
 
 EXPOSE 8000
+
+# Migrations run here rather than in the start command, so the image behaves
+# the same however the platform launches it. See docker-entrypoint.sh.
+ENTRYPOINT ["/srv/app/docker-entrypoint.sh"]
 
 # No secrets, no .env and no service-account JSON are baked in; configuration
 # arrives as environment variables and mounted secrets at run time.

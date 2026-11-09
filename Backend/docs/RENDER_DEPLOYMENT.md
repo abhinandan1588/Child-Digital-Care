@@ -18,7 +18,7 @@ there.
 | Listen on an assigned port | `PORT` env var | `dockerCommand` passes `--port $PORT`; the Dockerfile falls back to 8000 |
 | Run behind a TLS terminator | HTTPS proxy | `--proxy-headers --forwarded-allow-ips '*'` |
 | asyncpg driver URL | libpq `postgres://` URL | `normalize_database_url` in `app/core/config.py` |
-| Schema migrated before serving | pre-deploy command (paid) or start command | `alembic upgrade head` in `dockerCommand` |
+| Schema migrated before serving | pre-deploy command (paid only) | `docker-entrypoint.sh` runs `alembic upgrade head` before the server |
 | Secrets outside the repo | env vars, `generateValue`, `sync: false` | `render.yaml` |
 | RS256 keys without a file mount | env vars only | `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` inline PEM |
 
@@ -34,6 +34,16 @@ asyncpg dialect forwards every query parameter straight into
 `ssl` — so the connection dies with `TypeError: connect() got an unexpected
 keyword argument 'sslmode'`. `normalize_database_url` rewrites both, so the
 value can be pasted from the dashboard unedited.
+
+**Migrations.** Render's pre-deploy command requires a paid instance type, so
+on a free plan there is no platform hook that runs before the server starts.
+`docker-entrypoint.sh` therefore applies migrations itself and only then execs
+the server process. This makes the image behave identically whether it is
+launched by the Blueprint, by a dashboard-configured service, or by compose —
+a deployment that silently skips migrations starts cleanly and then fails every
+request with `relation "..." does not exist`, which is a far worse signal than
+refusing to boot. Set `RUN_MIGRATIONS_ON_START=false` once something else owns
+migrations, which you should do before scaling past one instance.
 
 **The RS256 keypair.** Production requires RS256, and the only way to give
 Render a secret is an environment variable. `JWT_PRIVATE_KEY` and
@@ -135,6 +145,77 @@ alter your runtime underneath you.
 
 ---
 
+## Troubleshooting
+
+### `ValidationError: Invalid configuration for APP_ENV=production`
+
+The deploy log ends with a list like this, and the instance restarts in a loop:
+
+```
+Value error, Invalid configuration for APP_ENV=production:
+  - SECRET_KEY still holds the example placeholder value.
+  - CORS_ORIGINS must list at least one allowed origin.
+  - REDIS_URL is required (rate limiting and outbox depend on it).
+  - DATABASE_URL is not set; it still holds the local development default.
+  - EMAIL_PROVIDER=console cannot be used in production.
+  - JWT_ALGORITHM should be RS256 in production ...
+[type=value_error, input_value={'app_env': 'production', 'port': '10000'}, ...]
+```
+
+This is not a code fault. The service has no environment variables set, so
+every setting fell back to its local-development default and startup
+validation refused to run a production environment on them.
+
+Read `input_value` — it names every variable the process actually received.
+`{'app_env': 'production', 'port': '10000'}` means **only two** arrived:
+`PORT`, injected by Render, and `APP_ENV`, which the Dockerfile bakes in
+(`ENV APP_ENV=production`). That baked value is deliberate: an unconfigured
+container then fails closed rather than quietly starting with docs exposed and
+mail disabled.
+
+Fix it by supplying the variables. Either apply `render.yaml` as a Blueprint,
+which sets them all, or add them to the existing service under **Environment**.
+The shortest list that boots is `APP_ENV=staging` plus four values:
+
+| Variable | Value |
+| --- | --- |
+| `APP_ENV` | `staging` (overrides the image's `production`) |
+| `DATABASE_URL` | Postgres → Connect → **Internal Database URL** |
+| `REDIS_URL` | Key Value → Connect → **Internal Key Value URL** |
+| `SECRET_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `CORS_ORIGINS` | your service's `https://<name>.onrender.com` for now |
+
+For `APP_ENV=production` instead, also set `JWT_ALGORITHM=RS256`,
+`JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `EMAIL_PROVIDER=smtp` with SMTP
+credentials, and `TRUSTED_HOSTS`. See the promotion checklist below.
+
+### `relation "parents" does not exist`
+
+Migrations have not run. The image's entrypoint applies them automatically, so
+this means either `RUN_MIGRATIONS_ON_START=false` is set, or the service
+overrides the entrypoint. Check the deploy log for `entrypoint: applying
+database migrations`.
+
+### `ModuleNotFoundError: No module named 'psycopg2'`
+
+`DATABASE_URL` reached SQLAlchemy without the asyncpg driver in its scheme.
+`normalize_database_url` handles the `postgres://` and `postgresql://` forms
+automatically, so this means the value has some other scheme. Paste the URL
+exactly as the dashboard gives it.
+
+### `TypeError: connect() got an unexpected keyword argument 'sslmode'`
+
+An external `?sslmode=require` URL reached asyncpg unrewritten. The same
+function translates `sslmode` to asyncpg's `ssl` spelling, so this should not
+occur; if it does, the code is older than this document.
+
+### Deploy fails its health check with `400 Invalid host header`
+
+`TRUSTED_HOSTS` does not include the hostname Render's prober uses. Add your
+`*.onrender.com` host, or unset the variable to disable host filtering.
+
+---
+
 ## Free plan limitations that affect this app
 
 These are platform behaviours, not bugs to fix:
@@ -151,10 +232,10 @@ These are platform behaviours, not bugs to fix:
   account deletions. The API works; this maintenance does not happen.
   **Retention sweeps and due deletions not running is a privacy commitment this
   deployment is not keeping** — see `docs/PRIVACY_AND_RETENTION.md`.
-- **No pre-deploy command.** Migrations therefore run in the start command.
-  That is safe for a single instance. Before scaling past one, move
-  `alembic upgrade head` into `preDeployCommand` so concurrent boots cannot
-  race on schema changes.
+- **No pre-deploy command.** Migrations therefore run in the image's
+  entrypoint. That is safe for a single instance. Before scaling past one, set
+  `preDeployCommand: alembic upgrade head` and `RUN_MIGRATIONS_ON_START=false`,
+  so concurrent boots cannot race on schema changes.
 - **Free Postgres is temporary** and a workspace is limited to one, which is
   why the Blueprint does not provision a database by default.
 - **Connection ceiling.** Render Postgres caps simultaneous connections, and
